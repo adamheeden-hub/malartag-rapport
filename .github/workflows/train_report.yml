@@ -1,0 +1,35 @@
+
+name: Malartag rapport
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "20 6 * * *"
+      timezone: "Europe/Stockholm"
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Hamta projekt
+        uses: actions/checkout@v4
+
+      - name: Installera Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Hamta taginformation
+        env:
+          TRAFIKVERKET_API_KEY: ${{ secrets.TRAFIKVERKET_API_KEY }}
+        run: python train_report.py
+
+      - name: Spara rapport
+        uses: actions/upload-artifact@v4
+        with:
+          name: malartag-rapport
+          path: report.json
