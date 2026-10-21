@@ -2,35 +2,43 @@
 import os
 import json
 import urllib.request
-from datetime import datetime
+import urllib.error
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from xml.sax.saxutils import escape
 
 API_URL = "https://api.trafikinfo.trafikverket.se/v2/data.json"
 API_KEY = os.environ["TRAFIKVERKET_API_KEY"]
 
 now = datetime.now(ZoneInfo("Europe/Stockholm"))
-today = now.date().isoformat()
+today = now.date()
+tomorrow = today + timedelta(days=1)
 
-query = f"""<REQUEST>
-<LOGIN authenticationkey="{API_KEY}"/>
-<QUERY objecttype="TrainAnnouncement" schemaversion="1.9">
-<FILTER>
-<AND>
-<EQ name="LocationSignature" value="Tip"/>
-<EQ name="ActivityType" value="Avgang"/>
-<GTE name="AdvertisedTimeAtLocation" value="{today}T00:00:00"/>
-<LT name="AdvertisedTimeAtLocation" value="$dateadd(1.00:00:00,{today}T00:00:00)"/>
-</AND>
-</FILTER>
-<INCLUDE>AdvertisedTrainIdent</INCLUDE>
-<INCLUDE>AdvertisedTimeAtLocation</INCLUDE>
-<INCLUDE>EstimatedTimeAtLocation</INCLUDE>
-<INCLUDE>ToLocation</INCLUDE>
-<INCLUDE>Canceled</INCLUDE>
-<INCLUDE>ProductInformation</INCLUDE>
-<INCLUDE>Deviation</INCLUDE>
-</QUERY>
-</REQUEST>"""
+start = f"{today.isoformat()}T00:00:00"
+end = f"{tomorrow.isoformat()}T00:00:00"
+
+query = f"""
+<REQUEST>
+  <LOGIN authenticationkey="{escape(API_KEY)}" />
+  <QUERY objecttype="TrainAnnouncement" schemaversion="1.9">
+    <FILTER>
+      <AND>
+        <EQ name="LocationSignature" value="Tip" />
+        <EQ name="ActivityType" value="Avgang" />
+        <GTE name="AdvertisedTimeAtLocation" value="{start}" />
+        <LT name="AdvertisedTimeAtLocation" value="{end}" />
+      </AND>
+    </FILTER>
+    <INCLUDE>AdvertisedTrainIdent</INCLUDE>
+    <INCLUDE>AdvertisedTimeAtLocation</INCLUDE>
+    <INCLUDE>EstimatedTimeAtLocation</INCLUDE>
+    <INCLUDE>ToLocation</INCLUDE>
+    <INCLUDE>Canceled</INCLUDE>
+    <INCLUDE>ProductInformation</INCLUDE>
+    <INCLUDE>Deviation</INCLUDE>
+  </QUERY>
+</REQUEST>
+"""
 
 request = urllib.request.Request(
     API_URL,
@@ -39,10 +47,17 @@ request = urllib.request.Request(
     method="POST"
 )
 
-with urllib.request.urlopen(request, timeout=30) as response:
-    data = json.load(response)
+try:
+    with urllib.request.urlopen(request, timeout=30) as response:
+        data = json.load(response)
+except urllib.error.HTTPError as error:
+    print("HTTP-status:", error.code)
+    print("Svar fran Trafikverket:")
+    print(error.read().decode("utf-8", errors="replace"))
+    raise
 
-trains = data["RESPONSE"]["RESULT"][0]["TrainAnnouncement"]
+results = data.get("RESPONSE", {}).get("RESULT", [])
+trains = results[0].get("TrainAnnouncement", []) if results else []
 
 report = []
 
@@ -51,12 +66,15 @@ for train in trains:
     destinations = train.get("ToLocation") or []
 
     is_malartag = any(
-        p.get("Description") == "Mälartåg"
+        "Mälartåg" in str(p.get("Description", ""))
         for p in products
+        if isinstance(p, dict)
     )
+
     to_uppsala = any(
         d.get("LocationName") == "U"
         for d in destinations
+        if isinstance(d, dict)
     )
 
     if not (is_malartag and to_uppsala):
@@ -70,10 +88,10 @@ for train in trains:
         "deviation": train.get("Deviation", [])
     })
 
-report.sort(key=lambda x: x["departure"])
+report.sort(key=lambda x: x.get("departure") or "")
 
 output = {
-    "date": today,
+    "date": today.isoformat(),
     "route": "Tierp till Uppsala",
     "updated": now.isoformat(),
     "trains": report
