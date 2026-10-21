@@ -19,7 +19,7 @@ end = f"{tomorrow.isoformat()}T00:00:00"
 
 query = f"""
 <REQUEST>
-  <LOGIN authenticationkey="{escape(API_KEY)}" />
+  <LOGIN authenticationkey="{escape(API_KEY, {'"': '&quot;'})}" />
   <QUERY objecttype="TrainAnnouncement" schemaversion="1.9">
     <FILTER>
       <AND>
@@ -52,7 +52,6 @@ try:
         data = json.load(response)
 except urllib.error.HTTPError as error:
     print("HTTP-status:", error.code)
-    print("Svar fran Trafikverket:")
     print(error.read().decode("utf-8", errors="replace"))
     raise
 
@@ -66,7 +65,7 @@ for train in trains:
     destinations = train.get("ToLocation") or []
 
     is_malartag = any(
-        "Mälartåg" in str(p.get("Description", ""))
+        p.get("Description") == "Mälartåg"
         for p in products
         if isinstance(p, dict)
     )
@@ -77,22 +76,41 @@ for train in trains:
         if isinstance(d, dict)
     )
 
-    if not (is_malartag and to_uppsala):
+    departure = train.get("AdvertisedTimeAtLocation")
+    if not departure:
         continue
+
+    departure_time = datetime.fromisoformat(departure)
+
+    if not (
+        is_malartag
+        and to_uppsala
+        and departure_time.strftime("%H:%M") == "06:40"
+    ):
+        continue
+
+    estimated = train.get("EstimatedTimeAtLocation")
+    delay_minutes = None
+
+    if estimated:
+        estimated_time = datetime.fromisoformat(estimated)
+        delay_minutes = round(
+            (estimated_time - departure_time).total_seconds() / 60
+        )
 
     report.append({
         "train": train.get("AdvertisedTrainIdent"),
-        "departure": train.get("AdvertisedTimeAtLocation"),
-        "estimated": train.get("EstimatedTimeAtLocation"),
+        "departure": departure,
+        "estimated": estimated,
+        "delay_minutes": delay_minutes,
         "canceled": train.get("Canceled", False),
-        "deviation": train.get("Deviation", [])
+        "deviation": train.get("Deviation") or []
     })
-
-report.sort(key=lambda x: x.get("departure") or "")
 
 output = {
     "date": today.isoformat(),
     "route": "Tierp till Uppsala",
+    "scheduled_departure": "06:40",
     "updated": now.isoformat(),
     "trains": report
 }
@@ -100,4 +118,11 @@ output = {
 with open("report.json", "w", encoding="utf-8") as file:
     json.dump(output, file, ensure_ascii=False, indent=2)
 
-print(f"Rapport skapad: {len(report)} avgångar")
+if report:
+    train = report[0]
+    print("Tag:", train["train"])
+    print("Avgang:", train["departure"])
+    print("Forsening minuter:", train["delay_minutes"])
+    print("Installt:", train["canceled"])
+else:
+    print("Ingen Malartag avgang 06:40 hittades idag")
